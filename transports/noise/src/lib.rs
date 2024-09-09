@@ -244,6 +244,12 @@ pub enum Error {
     SigningError(#[from] libp2p_identity::SigningError),
     #[error("Expected WebTransport certhashes ({}) are not a subset of received ones ({})", certhashes_to_string(.0), certhashes_to_string(.1))]
     UnknownWebTransportCerthashes(HashSet<Multihash<64>>, HashSet<Multihash<64>>),
+    #[error("Failed to generate attestation: {0}")]
+    GeneratingAttestationFailed(String),
+    #[error("Failed to verify attestation: {0}")]
+    InvalidAttestation(String),
+    #[error("Failed to decode identity proof: {0}")]
+    InvalidIdentityProof(String),
 }
 
 #[derive(Debug, thiserror::Error)]

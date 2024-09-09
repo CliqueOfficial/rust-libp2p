@@ -32,6 +32,7 @@ use crate::io::Output;
 use crate::protocol::{KeypairIdentity, PublicKey, STATIC_KEY_DOMAIN};
 use crate::Error;
 use asynchronous_codec::Framed;
+use clique_sibyl_commonlib::attestation::{verify_attestation_and_user_report, Attestation};
 use futures::prelude::*;
 use libp2p_identity as identity;
 use multihash::Multihash;
@@ -49,8 +50,8 @@ pub(crate) struct State<T> {
     /// The associated public identity of the local node's static DH keypair,
     /// which can be sent to the remote as part of an authenticated handshake.
     identity: KeypairIdentity,
-    /// The received signature over the remote's static DH public key, if any.
-    dh_remote_pubkey_sig: Option<Vec<u8>>,
+    /// The received proof for the signature over the remote's static DH public key, if any.
+    dh_remote_pubkey_proof: Option<Vec<u8>>,
     /// The known or received public identity key of the remote, if any.
     id_remote_pubkey: Option<identity::PublicKey>,
     /// The WebTransport certhashes of the responder, if any.
@@ -84,7 +85,7 @@ where
         Self {
             identity,
             io: Framed::new(io, Codec::new(session)),
-            dh_remote_pubkey_sig: None,
+            dh_remote_pubkey_proof: None,
             id_remote_pubkey: expected_remote_key,
             responder_webtransport_certhashes,
             remote_extensions: None,
@@ -107,11 +108,29 @@ where
             .id_remote_pubkey
             .ok_or_else(|| Error::AuthenticationFailed)?;
 
-        let is_valid_signature = self.dh_remote_pubkey_sig.as_ref().map_or(false, |s| {
-            id_pk.verify(&[STATIC_KEY_DOMAIN.as_bytes(), pubkey.as_ref()].concat(), s)
-        });
+        if let Some(proof) = self.dh_remote_pubkey_proof.as_ref() {
+            let (signature, attestation) = decode_identity_proof(proof)?;
 
-        if !is_valid_signature {
+            // verify attestation first
+            let attestation = Attestation::from_slice(&attestation)
+                .map_err(|_| Error::InvalidAttestation(format!("Invalid attestation slice")))?;
+            let is_match = verify_attestation_and_user_report(&attestation, None, None, &signature)
+                .map_err(|e| {
+                    Error::InvalidAttestation(format!("Failed to verify attestation: {e}"))
+                })?;
+            if !is_match {
+                return Err(Error::InvalidAttestation(format!("Signature mismatch")));
+            }
+            tracing::debug!("verify attestation success");
+
+            // Verify the signature
+            if !id_pk.verify(
+                &[STATIC_KEY_DOMAIN.as_bytes(), pubkey.as_ref()].concat(),
+                &signature,
+            ) {
+                return Err(Error::BadSignature);
+            }
+        } else {
             return Err(Error::BadSignature);
         }
 
@@ -228,7 +247,7 @@ where
     state.id_remote_pubkey = Some(identity::PublicKey::try_decode_protobuf(&pb.identity_key)?);
 
     if !pb.identity_sig.is_empty() {
-        state.dh_remote_pubkey_sig = Some(pb.identity_sig);
+        state.dh_remote_pubkey_proof = Some(pb.identity_sig);
     }
 
     if let Some(extensions) = pb.extensions {
@@ -248,7 +267,9 @@ where
         ..Default::default()
     };
 
-    pb.identity_sig.clone_from(&state.identity.signature);
+    // Use encoded indentity proof (signature + attestation) instead of identity signature
+    let identity_proof = encode_identity_proof(&state.identity);
+    pb.identity_sig.clone_from(&identity_proof);
 
     // If this is the responder then send WebTransport certhashes to initiator, if any.
     if state.io.codec().is_responder() {
@@ -264,4 +285,50 @@ where
     state.io.send(&pb).await?;
 
     Ok(())
+}
+
+fn encode_identity_proof(identity: &KeypairIdentity) -> Vec<u8> {
+    let mut encoded = Vec::new();
+
+    // Encode the signature length as a u32 in big-endian format
+    let signature_len = identity.signature.len() as u32;
+    encoded.extend_from_slice(&signature_len.to_be_bytes());
+
+    // Encode the signature
+    encoded.extend_from_slice(&identity.signature);
+
+    // Encode the attestation
+    encoded.extend_from_slice(&identity.attestation);
+
+    encoded
+}
+
+fn decode_identity_proof(encoded: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Error> {
+    if encoded.len() < 4 {
+        return Err(Error::InvalidIdentityProof("Encoded data too short".into()));
+    }
+
+    // Decode the signature length
+    let signature_len =
+        u32::from_be_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]) as usize;
+
+    if signature_len > 512 {
+        return Err(Error::InvalidIdentityProof(
+            "Not a encoded identity proof".into(),
+        ));
+    }
+
+    if encoded.len() < 4 + signature_len {
+        return Err(Error::InvalidIdentityProof(
+            "Encoded data too short for signature".into(),
+        ));
+    }
+
+    // Extract the signature
+    let signature = encoded[4..4 + signature_len].to_vec();
+
+    // The rest is the attestation
+    let attestation = encoded[4 + signature_len..].to_vec();
+
+    Ok((signature, attestation))
 }

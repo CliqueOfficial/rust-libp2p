@@ -75,6 +75,8 @@ pub(crate) struct KeypairIdentity {
     pub(crate) public: identity::PublicKey,
     /// The signature over the public DH key.
     pub(crate) signature: Vec<u8>,
+    /// The attestation for the signature
+    pub(crate) attestation: Vec<u8>,
 }
 
 impl Keypair {
@@ -90,10 +92,14 @@ impl Keypair {
         id_keys: &identity::Keypair,
     ) -> Result<AuthenticKeypair, Error> {
         let sig = id_keys.sign(&[STATIC_KEY_DOMAIN.as_bytes(), self.public.as_ref()].concat())?;
+        let attestation = clique_sibyl_commonlib::attestation::generate_attestation(&sig)
+            .map_err(|e| Error::GeneratingAttestationFailed(e.to_string()))?
+            .to_vec();
 
         let identity = KeypairIdentity {
             public: id_keys.public(),
             signature: sig,
+            attestation,
         };
 
         Ok(AuthenticKeypair {
