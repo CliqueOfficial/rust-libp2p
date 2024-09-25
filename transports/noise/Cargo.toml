@@ -26,7 +26,7 @@ thiserror = "1.0.61"
 tracing = { workspace = true }
 x25519-dalek = "2"
 zeroize = "1"
-clique-sibyl-commonlib = { git = "https://github.com/CliqueOfficial/clique-sibyl-commonlib", branch = "main" }
+clique-sibyl-commonlib = { git = "https://github.com/CliqueOfficial/clique-sibyl-commonlib", tag = "v2.2.0" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 snow = { version = "0.9.6", features = ["ring-resolver"], default-features = false }
