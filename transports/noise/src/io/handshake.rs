@@ -33,6 +33,7 @@ use crate::protocol::{KeypairIdentity, PublicKey, STATIC_KEY_DOMAIN};
 use crate::Error;
 use asynchronous_codec::Framed;
 use clique_sibyl_commonlib::attestation::{verify_attestation_and_user_report, Attestation};
+use clique_sibyl_commonlib::utils::{get_trusted_enclaves_from_env, get_trusted_signers_from_env};
 use futures::prelude::*;
 use libp2p_identity as identity;
 use multihash::Multihash;
@@ -111,13 +112,20 @@ where
         if let Some(proof) = self.dh_remote_pubkey_proof.as_ref() {
             let (signature, attestation) = decode_identity_proof(proof)?;
 
+            let trusted_enclaves =
+                get_trusted_enclaves_from_env().expect("Failed to get trusted mr_enclaves");
+            let trusted_signers =
+                get_trusted_signers_from_env().expect("Failed to get trusted mr_signers");
             // verify attestation first
             let attestation = Attestation::from_slice(&attestation)
                 .map_err(|_| Error::InvalidAttestation(format!("Invalid attestation slice")))?;
-            let is_match = verify_attestation_and_user_report(&attestation, None, None, &signature)
-                .map_err(|e| {
-                    Error::InvalidAttestation(format!("Failed to verify attestation: {e}"))
-                })?;
+            let is_match = verify_attestation_and_user_report(
+                &attestation,
+                trusted_enclaves,
+                trusted_signers,
+                &signature,
+            )
+            .map_err(|e| Error::InvalidAttestation(format!("Failed to verify attestation: {e}")))?;
             if !is_match {
                 return Err(Error::InvalidAttestation(format!("Signature mismatch")));
             }
